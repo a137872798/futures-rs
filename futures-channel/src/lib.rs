@@ -33,6 +33,7 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+// 同样该模块是用于暴露其他模块的
 #[cfg(not(futures_no_atomic_cas))]
 #[cfg(feature = "alloc")]
 mod lock;

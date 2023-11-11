@@ -101,6 +101,8 @@
 #[cfg(all(feature = "bilock", not(feature = "unstable")))]
 compile_error!("The `bilock` feature requires the `unstable` feature as an explicit opt-in to unstable features");
 
+// 该lib本身是用于暴露其他模块的
+
 #[doc(no_inline)]
 pub use futures_core::future::{Future, TryFuture};
 #[doc(no_inline)]

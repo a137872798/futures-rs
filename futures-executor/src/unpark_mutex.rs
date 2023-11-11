@@ -7,11 +7,13 @@ use std::sync::atomic::Ordering::SeqCst;
 /// Used to ensure that concurrent `unpark` invocations lead to (1) `poll` being
 /// invoked on only a single thread at a time (2) `poll` being invoked at least
 /// once after each `unpark` (unless the future has completed).
+/// 非阻塞锁  也就是当其他线程无法拿到锁时 不希望进入阻塞状态
 pub(crate) struct UnparkMutex<D> {
     // The state of task execution (state machine described below)
     status: AtomicUsize,
 
     // The actual task data, accessible only in the POLLING state
+    // 代表此时等待的任务
     inner: UnsafeCell<Option<D>>,
 }
 
@@ -58,6 +60,7 @@ impl<D> UnparkMutex<D> {
         loop {
             match status {
                 // The task is idle, so try to run it immediately.
+                // 表示被唤醒
                 WAITING => {
                     match self.status.compare_exchange(WAITING, POLLING, SeqCst, SeqCst) {
                         Ok(_) => {
@@ -97,6 +100,7 @@ impl<D> UnparkMutex<D> {
     ///
     /// Callable only from the `POLLING`/`REPOLL` states, i.e. between
     /// successful calls to `notify` and `wait`/`complete`.
+    /// 进入拉取状态
     pub(crate) unsafe fn start_poll(&self) {
         self.status.store(POLLING, SeqCst);
     }
@@ -107,9 +111,12 @@ impl<D> UnparkMutex<D> {
     ///
     /// Callable only from the `POLLING`/`REPOLL` states, i.e. between
     /// successful calls to `notify` and `wait`/`complete`.
+    ///
+    /// 当发现future处于pending时 进入等待状态
     pub(crate) unsafe fn wait(&self, data: D) -> Result<(), D> {
         *self.inner.get() = Some(data);
 
+        // 切换成等待状态
         match self.status.compare_exchange(POLLING, WAITING, SeqCst, SeqCst) {
             // no unparks came in while we were running
             Ok(_) => Ok(()),

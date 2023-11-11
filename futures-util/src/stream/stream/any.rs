@@ -80,6 +80,8 @@ where
                     Some(item) => {
                         this.future.set(Some((this.f)(item)));
                     }
+
+                    // 代表流已经被读取完 没有符合条件的数据
                     None => {
                         *this.done = true;
                         break false;

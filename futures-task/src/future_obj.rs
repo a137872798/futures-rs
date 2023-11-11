@@ -13,6 +13,7 @@ use core::{
 /// This custom trait object was introduced as currently it is not possible to
 /// take `dyn Trait` by value and `Box<dyn Trait>` is not available in no_std
 /// contexts.
+/// future的一个包装对象 由当前线程持有
 pub struct LocalFutureObj<'a, T> {
     future: *mut (dyn Future<Output = T> + 'static),
     drop_fn: unsafe fn(*mut (dyn Future<Output = T> + 'static)),

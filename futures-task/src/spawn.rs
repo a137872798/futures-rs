@@ -3,6 +3,7 @@ use core::fmt;
 
 /// The `Spawn` trait allows for pushing futures onto an executor that will
 /// run them to completion.
+/// 代表将任务推送到里面后 会通过executor执行  直到任务完成   这里代表推送的是一个mpsc队列
 pub trait Spawn {
     /// Spawns a future that will be run to completion.
     ///
@@ -28,6 +29,7 @@ pub trait Spawn {
 
 /// The `LocalSpawn` is similar to [`Spawn`], but allows spawning futures
 /// that don't implement `Send`.
+/// 推送到本地线程队列
 pub trait LocalSpawn {
     /// Spawns a future that will be run to completion.
     ///

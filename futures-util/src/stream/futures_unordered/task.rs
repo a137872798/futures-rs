@@ -7,34 +7,41 @@ use super::abort::abort;
 use super::ReadyToRunQueue;
 use crate::task::{waker_ref, ArcWake, WakerRef};
 
+// 任务对象 包裹了一个future
 pub(super) struct Task<Fut> {
-    // The future
+    // The future   对应future对象
     pub(super) future: UnsafeCell<Option<Fut>>,
 
     // Next pointer for linked list tracking all active tasks (use
     // `spin_next_all` to read when access is shared across threads)
+    // 所有task以链表结构连接
     pub(super) next_all: AtomicPtr<Task<Fut>>,
 
     // Previous task in linked list tracking all active tasks
+    // 前一个节点
     pub(super) prev_all: UnsafeCell<*const Task<Fut>>,
 
     // Length of the linked list tracking all active tasks when this node was
     // inserted (use `spin_next_all` to synchronize before reading when access
     // is shared across threads)
+    // 描述链表总长度
     pub(super) len_all: UnsafeCell<usize>,
 
     // Next pointer in ready to run queue
+    // 指向下个要执行的task  其实也是next指针
     pub(super) next_ready_to_run: AtomicPtr<Task<Fut>>,
 
     // Queue that we'll be enqueued to when woken
+    // 当任务准备就绪时 要重新回到任务队列
     pub(super) ready_to_run_queue: Weak<ReadyToRunQueue<Fut>>,
 
     // Whether or not this task is currently in the ready to run queue
+    // 当前任务是否已经在队列中了
     pub(super) queued: AtomicBool,
 
     // Whether the future was awoken during polling
     // It is possible for this flag to be set to true after the polling,
-    // but it will be ignored.
+    // but it will be ignored.  代表近期被wake过一次
     pub(super) woken: AtomicBool,
 }
 
@@ -45,14 +52,15 @@ pub(super) struct Task<Fut> {
 // across different threads.
 unsafe impl<Fut> Send for Task<Fut> {}
 unsafe impl<Fut> Sync for Task<Fut> {}
-
 impl<Fut> ArcWake for Task<Fut> {
     fn wake_by_ref(arc_self: &Arc<Self>) {
+        // 从弱引用升级到强引用
         let inner = match arc_self.ready_to_run_queue.upgrade() {
             Some(inner) => inner,
             None => return,
         };
 
+        // 因为本对象被唤醒 设置woken标记
         arc_self.woken.store(true, Relaxed);
 
         // It's our job to enqueue this task it into the ready to run queue. To
@@ -69,7 +77,9 @@ impl<Fut> ArcWake for Task<Fut> {
         // still.
         let prev = arc_self.queued.swap(true, SeqCst);
         if !prev {
+            // 被唤醒时 回到队列
             inner.enqueue(Arc::as_ptr(arc_self));
+            // 通知队列有新的任务了 可以发派给executor
             inner.waker.wake();
         }
     }
@@ -77,6 +87,7 @@ impl<Fut> ArcWake for Task<Fut> {
 
 impl<Fut> Task<Fut> {
     /// Returns a waker reference for this task without cloning the Arc.
+    /// 会调用wake方法 进而转发到wake_by_ref
     pub(super) fn waker_ref(this: &Arc<Self>) -> WakerRef<'_> {
         waker_ref(this)
     }
@@ -98,6 +109,7 @@ impl<Fut> Task<Fut> {
         ordering: Ordering,
     ) -> *const Self {
         loop {
+            // 自旋 等待next发生变化 并返回
             let next = self.next_all.load(ordering);
             if next != pending_next_all {
                 return next;
@@ -116,6 +128,7 @@ impl<Fut> Drop for Task<Fut> {
         // Consequently it *should* be the case that we always drop futures from
         // the `FuturesUnordered` instance. This is a bomb, just in case there's
         // a bug in that logic.
+        // 要求在丢弃该task前 应该已经完成了future
         unsafe {
             if (*self.future.get()).is_some() {
                 abort("future still here when dropping");

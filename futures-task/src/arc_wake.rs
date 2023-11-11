@@ -17,6 +17,8 @@ use alloc::sync::Arc;
 /// [`WakerRef`]: super::WakerRef
 // Note: Send + Sync required because `Arc<T>` doesn't automatically imply
 // those bounds, but `Waker` implements them.
+
+// 代表一个被Arc包裹的wake
 pub trait ArcWake: Send + Sync {
     /// Indicates that the associated task is ready to make progress and should
     /// be `poll`ed.

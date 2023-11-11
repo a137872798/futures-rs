@@ -15,6 +15,9 @@ use crate::lock::Lock;
 /// A future for a value that will be provided by another asynchronous task.
 ///
 /// This is created by the [`channel`] function.
+///
+/// 定义了单次发送的管道  不同于mpsc    因为receiver内的数据也是从sender处获取的 所以他们共用一个inner
+/// 相比java代码 在多线程环境下被共享的对象就需要 Arc 包装
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Receiver<T> {
     inner: Arc<Inner<T>>,
@@ -43,6 +46,7 @@ struct Inner<T> {
     ///
     /// For `Sender` if this is `true` then the oneshot has gone away and it
     /// can return ready from `poll_canceled`.
+    /// 当2者都drop时 才为true
     complete: AtomicBool,
 
     /// The actual data being transferred as part of this `Receiver`. This is
@@ -52,7 +56,10 @@ struct Inner<T> {
     /// replace with an `UnsafeCell` as it's actually protected by `complete`
     /// above. I wouldn't recommend doing this, however, unless someone is
     /// supremely confident in the various atomic orderings here and there.
+    /// 场景简单 所以只需要基于CAS的锁
     data: Lock<Option<T>>,
+
+    /// 先调用send/receive 都需要对应的waker对象
 
     /// Field to store the task which is blocked in `Receiver::poll`.
     ///
@@ -64,6 +71,7 @@ struct Inner<T> {
 
     /// Like `rx_task` above, except for the task blocked in
     /// `Sender::poll_canceled`. Additionally, `Lock` cannot be `UnsafeCell`.
+    /// 对应canceled的锁
     tx_task: Lock<Option<Waker>>,
 }
 
@@ -129,12 +137,15 @@ impl<T> Inner<T> {
         if let Some(mut slot) = self.data.try_lock() {
             assert!(slot.is_none());
             *slot = Some(t);
+
+            // 释放锁
             drop(slot);
 
             // If the receiver called `close()` between the check at the
             // start of the function, and the lock being released, then
             // the receiver may not be around to receive it, so try to
             // pull it back out.
+            // 管道已经被关闭的情况 以err的形式返回数据
             if self.complete.load(SeqCst) {
                 // If lock acquisition fails, then receiver is actually
                 // receiving it, so we're good.
@@ -146,11 +157,12 @@ impl<T> Inner<T> {
             }
             Ok(())
         } else {
-            // Must have been closed
+            // Must have been closed   获取锁失败 必然已经设置过数据
             Err(t)
         }
     }
 
+    // 外部线程调用  等待send/receive结束  每当有需要被唤醒的外部对象时 就会需要context参数
     fn poll_canceled(&self, cx: &mut Context<'_>) -> Poll<()> {
         // Fast path up first, just read the flag and see if our other half is
         // gone. This flag is set both in our destructor and the oneshot
@@ -174,6 +186,7 @@ impl<T> Inner<T> {
         // flag, and if it fails to acquire the lock it assumes that we'll see
         // the flag later on. So... we then try to see the flag later on!
         let handle = cx.waker().clone();
+        // 设置了tx_task
         match self.tx_task.try_lock() {
             Some(mut p) => *p = Some(handle),
             None => return Poll::Ready(()),
@@ -189,6 +202,7 @@ impl<T> Inner<T> {
         self.complete.load(SeqCst)
     }
 
+    // 作为发送者关闭通道时
     fn drop_tx(&self) {
         // Flag that we're a completed `Sender` and try to wake up a receiver.
         // Whether or not we actually stored any data will get picked up and
@@ -226,6 +240,7 @@ impl<T> Inner<T> {
         }
     }
 
+    // 作为receiver关闭通道时
     fn close_rx(&self) {
         // Flag our completion and then attempt to wake up the sender if it's
         // blocked. See comments in `drop` below for more info
@@ -264,6 +279,7 @@ impl<T> Inner<T> {
         let done = if self.complete.load(SeqCst) {
             true
         } else {
+            // 设置waker对象
             let task = cx.waker().clone();
             match self.rx_task.try_lock() {
                 Some(mut slot) => {
@@ -460,9 +476,11 @@ impl<T> Future for Receiver<T> {
     }
 }
 
+// 多了个判断stream是否终止的api
 impl<T> FusedFuture for Receiver<T> {
     fn is_terminated(&self) -> bool {
         if self.inner.complete.load(SeqCst) {
+            // 代表数据还没取出来
             if let Some(slot) = self.inner.data.try_lock() {
                 if slot.is_some() {
                     return false;

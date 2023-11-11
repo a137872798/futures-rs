@@ -15,6 +15,7 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+/// 暴露future/stream/task
 pub mod future;
 #[doc(no_inline)]
 pub use self::future::{FusedFuture, Future, TryFuture};

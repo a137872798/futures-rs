@@ -19,6 +19,7 @@ pub struct Shared<Fut: Future> {
 }
 
 struct Inner<Fut: Future> {
+    // 代表是一个待执行的任务 或者结果
     future_or_output: UnsafeCell<FutureOrOutput<Fut>>,
     notifier: Arc<Notifier>,
 }

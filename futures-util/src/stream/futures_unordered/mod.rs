@@ -31,6 +31,8 @@ use self::task::Task;
 mod ready_to_run_queue;
 use self::ready_to_run_queue::{Dequeue, ReadyToRunQueue};
 
+/// 在mod中将各个组件集成起来
+
 /// A set of futures which may complete in any order.
 ///
 /// See [`FuturesOrdered`](crate::stream::FuturesOrdered) for a version of this
@@ -56,7 +58,9 @@ use self::ready_to_run_queue::{Dequeue, ReadyToRunQueue};
 /// library is activated, and it is activated by default.
 #[must_use = "streams do nothing unless polled"]
 pub struct FuturesUnordered<Fut> {
+    // 任务队列 准备就绪的任务会进入到该队列中
     ready_to_run_queue: Arc<ReadyToRunQueue<Fut>>,
+    // 队列头部
     head_all: AtomicPtr<Task<Fut>>,
     is_terminated: AtomicBool,
 }
@@ -65,6 +69,7 @@ unsafe impl<Fut: Send> Send for FuturesUnordered<Fut> {}
 unsafe impl<Fut: Send + Sync> Sync for FuturesUnordered<Fut> {}
 impl<Fut> Unpin for FuturesUnordered<Fut> {}
 
+/// 孵化器  将任务推送到队列中   最终会由executor执行并完成
 impl Spawn for FuturesUnordered<FutureObj<'_, ()>> {
     fn spawn_obj(&self, future_obj: FutureObj<'static, ()>) -> Result<(), SpawnError> {
         self.push(future_obj);
@@ -110,6 +115,8 @@ impl<Fut> Default for FuturesUnordered<Fut> {
     }
 }
 
+
+/// 代表一个维护future的队列 与executor配合使用
 impl<Fut> FuturesUnordered<Fut> {
     /// Constructs a new, empty [`FuturesUnordered`].
     ///
@@ -117,6 +124,7 @@ impl<Fut> FuturesUnordered<Fut> {
     /// In this state, [`FuturesUnordered::poll_next`](Stream::poll_next) will
     /// return [`Poll::Ready(None)`](Poll::Ready).
     pub fn new() -> Self {
+        // 存根对象是一个空对象
         let stub = Arc::new(Task {
             future: UnsafeCell::new(None),
             next_all: AtomicPtr::new(ptr::null_mut()),
@@ -128,6 +136,8 @@ impl<Fut> FuturesUnordered<Fut> {
             woken: AtomicBool::new(false),
         });
         let stub_ptr = Arc::as_ptr(&stub);
+
+        // 初始化时 以存根对象作为 head/tail节点
         let ready_to_run_queue = Arc::new(ReadyToRunQueue {
             waker: AtomicWaker::new(),
             head: AtomicPtr::new(stub_ptr as *mut _),
@@ -163,7 +173,9 @@ impl<Fut> FuturesUnordered<Fut> {
     /// call [`poll`](core::future::Future::poll) on the submitted future. The caller must
     /// ensure that [`FuturesUnordered::poll_next`](Stream::poll_next) is called
     /// in order to receive wake-up notifications for the given future.
+    /// 往队列中插入元素
     pub fn push(&self, future: Fut) {
+        // 此时task仅包含了future
         let task = Arc::new(Task {
             future: UnsafeCell::new(Some(future)),
             next_all: AtomicPtr::new(self.pending_next_all()),
@@ -182,6 +194,7 @@ impl<Fut> FuturesUnordered<Fut> {
         // Right now our task has a strong reference count of 1. We transfer
         // ownership of this reference count to our internal linked list
         // and we'll reclaim ownership through the `unlink` method below.
+        // 外层有一个链表 维护所有任务 而内部维护第二个队列 仅存储准备就绪的任务
         let ptr = self.link(task);
 
         // We'll need to get the future "into the system" to start tracking it,
@@ -201,7 +214,9 @@ impl<Fut> FuturesUnordered<Fut> {
 
     /// Returns an iterator that allows inspecting each future in the set.
     pub fn iter_pin_ref(self: Pin<&Self>) -> IterPinRef<'_, Fut> {
+        // 返回头部任务 以及队列总长度
         let (task, len) = self.atomic_load_head_and_len_all();
+        // 获取存根任务
         let pending_next_all = self.pending_next_all();
 
         IterPinRef { task, len, pending_next_all, _marker: PhantomData }
@@ -228,6 +243,7 @@ impl<Fut> FuturesUnordered<Fut> {
     /// Returns the current head node and number of futures in the list of all
     /// futures within a context where access is shared with other threads
     /// (mostly for use with the `len` and `iter_pin_ref` methods).
+    /// 计算队列的总长度
     fn atomic_load_head_and_len_all(&self) -> (*const Task<Fut>, usize) {
         let task = self.head_all.load(Acquire);
         let len = if task.is_null() {
@@ -235,6 +251,7 @@ impl<Fut> FuturesUnordered<Fut> {
         } else {
             unsafe {
                 (*task).spin_next_all(self.pending_next_all(), Acquire);
+                // head一定是维护最新的长度
                 *(*task).len_all.get()
             }
         };
@@ -245,6 +262,7 @@ impl<Fut> FuturesUnordered<Fut> {
     /// Releases the task. It destroys the future inside and either drops
     /// the `Arc<Task>` or transfers ownership to the ready to run queue.
     /// The task this method is called on must have been unlinked before.
+    /// 从队列中移除某个任务
     fn release_task(&mut self, task: Arc<Task<Fut>>) {
         // `release_task` must only be called on unlinked tasks
         debug_assert_eq!(task.next_all.load(Relaxed), self.pending_next_all());
@@ -263,6 +281,7 @@ impl<Fut> FuturesUnordered<Fut> {
         unsafe {
             // Set to `None` rather than `take()`ing to prevent moving the
             // future.
+            // 将任务体设置为none
             *task.future.get() = None;
         }
 
@@ -277,12 +296,14 @@ impl<Fut> FuturesUnordered<Fut> {
         // enqueue the task, so our task will never see the ready to run queue
         // again. The task itself will be deallocated once all reference counts
         // have been dropped elsewhere by the various wakers that contain it.
+        // 如果已经入队了  在释放队列时 会完成对象的回收 这里就不需要重复回收了
         if prev {
             mem::forget(task);
         }
     }
 
     /// Insert a new task into the internal linked list.
+    /// 为task设置一些队列相关的信息
     fn link(&self, task: Arc<Task<Fut>>) -> *const Task<Fut> {
         // `next_all` should already be reset to the pending state before this
         // function is called.
@@ -291,9 +312,11 @@ impl<Fut> FuturesUnordered<Fut> {
 
         // Atomically swap out the old head node to get the node that should be
         // assigned to `next_all`.
+        // 设置到队列头部
         let next = self.head_all.swap(ptr as *mut _, AcqRel);
 
         unsafe {
+            // 下面是计算队列长度
             // Store the new list length in the new node.
             let new_len = if next.is_null() {
                 1
@@ -301,16 +324,19 @@ impl<Fut> FuturesUnordered<Fut> {
                 // Make sure `next_all` has been written to signal that it is
                 // safe to read `len_all`.
                 (*next).spin_next_all(self.pending_next_all(), Acquire);
+                // task长度为原head长度+1 head的长度一定是最新的
                 *(*next).len_all.get() + 1
             };
             *(*ptr).len_all.get() = new_len;
 
             // Write the old head as the next node pointer, signaling to other
             // threads that `len_all` and `next_all` are ready to read.
+            // 构成链表
             (*ptr).next_all.store(next, Release);
 
             // `prev_all` updates don't need to be synchronized, as the field is
             // only ever used after exclusive access has been acquired.
+            // 双向链表
             if !next.is_null() {
                 *(*next).prev_all.get() = ptr;
             }
@@ -323,11 +349,13 @@ impl<Fut> FuturesUnordered<Fut> {
     /// managed by `FuturesUnordered`.
     /// This method is unsafe because it has be guaranteed that `task` is a
     /// valid pointer.
+    /// 将某个元素从链表中移除   应该是对应任务已经完成的情况
     unsafe fn unlink(&mut self, task: *const Task<Fut>) -> Arc<Task<Fut>> {
         // Compute the new list length now in case we're removing the head node
         // and won't be able to retrieve the correct length later.
         let head = *self.head_all.get_mut();
         debug_assert!(!head.is_null());
+        // 总长度-1
         let new_len = *(*head).len_all.get() - 1;
 
         let task = Arc::from_raw(task);
@@ -336,6 +364,7 @@ impl<Fut> FuturesUnordered<Fut> {
         task.next_all.store(self.pending_next_all(), Relaxed);
         *task.prev_all.get() = ptr::null_mut();
 
+        // 更新链表连接信息
         if !next.is_null() {
             *(*next).prev_all.get() = prev;
         }
@@ -385,6 +414,8 @@ impl<Fut> FuturesUnordered<Fut> {
     }
 }
 
+
+// 将任务队列作为stream来看待
 impl<Fut: Future> Stream for FuturesUnordered<Fut> {
     type Item = Fut::Output;
 
@@ -397,22 +428,28 @@ impl<Fut: Future> Stream for FuturesUnordered<Fut> {
         let mut yielded = 0;
 
         // Ensure `parent` is correctly set.
+        // 设置waker 当任务队列有新任务时 会主动唤醒waker 这样外层可以进行重试
+        // waker 更像一个回调对象
         self.ready_to_run_queue.waker.register(cx.waker());
 
         loop {
             // Safety: &mut self guarantees the mutual exclusion `dequeue`
             // expects
+            // 从任务队列中获取就绪的对象
             let task = match unsafe { self.ready_to_run_queue.dequeue() } {
                 Dequeue::Empty => {
+                    // 代表整个链表为空 已经没有任务会加入到就绪队列了  设置终止标识 并返回None
                     if self.is_empty() {
                         // We can only consider ourselves terminated once we
                         // have yielded a `None`
                         *self.is_terminated.get_mut() = true;
                         return Poll::Ready(None);
                     } else {
+                        // 还会有任务就绪  返回pending
                         return Poll::Pending;
                     }
                 }
+                // 直接触发唤醒 由外层进行重试
                 Dequeue::Inconsistent => {
                     // At this point, it may be worth yielding the thread &
                     // spinning a few times... but for now, just yield using the
@@ -425,6 +462,8 @@ impl<Fut: Future> Stream for FuturesUnordered<Fut> {
 
             debug_assert!(task != self.ready_to_run_queue.stub());
 
+            // 此时拿到了准备就绪的任务
+
             // Safety:
             // - `task` is a valid pointer.
             // - We are the only thread that accesses the `UnsafeCell` that
@@ -436,6 +475,7 @@ impl<Fut: Future> Stream for FuturesUnordered<Fut> {
                 // cleaning out this task. See the comment in
                 // `release_task` for more information, but we're basically
                 // just taking ownership of our reference count here.
+                // 任务中的future已经被清除  对应release_task的逻辑 那么进行重试
                 None => {
                     // This case only happens when `release_task` was called
                     // for this task before and couldn't drop the task
@@ -456,6 +496,7 @@ impl<Fut: Future> Stream for FuturesUnordered<Fut> {
             };
 
             // Safety: `task` is a valid pointer
+            // 将任务从链表中移除
             let task = unsafe { self.unlink(task) };
 
             // Unset queued flag: This must be done before polling to ensure
@@ -483,6 +524,7 @@ impl<Fut: Future> Stream for FuturesUnordered<Fut> {
                 task: Option<Arc<Task<Fut>>>,
             }
 
+            // 通过封装bomb对象 为task追加了一个回收逻辑
             impl<Fut> Drop for Bomb<'_, Fut> {
                 fn drop(&mut self) {
                     if let Some(task) = self.task.take() {
@@ -504,6 +546,9 @@ impl<Fut: Future> Stream for FuturesUnordered<Fut> {
             // These structs will basically just use `Fut` to size
             // the internal allocation, appropriately accessing fields and
             // deallocating the task if need be.
+            // 上面的逻辑是从就绪队列中获取任务 现在是执行任务  将future的wake连接到了task的wake上
+            // 而task的wake 就是重新进入就绪队列 并激活本对象的poll_next 进而重新拉取到task对象并继续执行future.poll
+
             let res = {
                 let task = bomb.task.as_ref().unwrap();
                 // We are only interested in whether the future is awoken before it
@@ -521,6 +566,7 @@ impl<Fut: Future> Stream for FuturesUnordered<Fut> {
 
             match res {
                 Poll::Pending => {
+                    // 因为任务还未结束重新加入任务队列 (不是就绪队列)
                     let task = bomb.task.take().unwrap();
                     // If the future was awoken during polling, we assume
                     // the future wanted to explicitly yield.
@@ -532,12 +578,15 @@ impl<Fut: Future> Stream for FuturesUnordered<Fut> {
                     // avoid starving other tasks waiting on the executor.
                     // (polling the same future twice per iteration may cause
                     // the problem: https://github.com/rust-lang/futures-rs/pull/2333)
+                    // 后半段代表所有任务都遍历了一遍 且都处于未就绪状态 只能往上层返回pending 上层根据情况可能会阻塞线程
                     if yielded >= 2 || polled == len {
                         cx.waker().wake_by_ref();
                         return Poll::Pending;
                     }
                     continue;
                 }
+
+                // 内部的future已经执行完毕 将结果返回到上层(stream)
                 Poll::Ready(output) => return Poll::Ready(Some(output)),
             }
         }

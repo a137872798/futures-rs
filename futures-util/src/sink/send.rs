@@ -28,12 +28,14 @@ impl<Si: Sink<Item> + Unpin + ?Sized, Item> Future for Send<'_, Si, Item> {
         let this = &mut *self;
 
         if this.feed.is_item_pending() {
+            // 将feed传输到sink中
             ready!(Pin::new(&mut this.feed).poll(cx))?;
             debug_assert!(!this.feed.is_item_pending());
         }
 
         // we're done sending the item, but want to block on flushing the
         // sink
+        // 再从sink读取数据
         ready!(this.feed.sink_pin_mut().poll_flush(cx))?;
 
         Poll::Ready(Ok(()))

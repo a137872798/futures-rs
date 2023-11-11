@@ -1,6 +1,7 @@
 use std::cell::Cell;
 use std::fmt;
 
+// 每个线程 维护一个本地变量
 thread_local!(static ENTERED: Cell<bool> = Cell::new(false));
 
 /// Represents an executor context.
@@ -52,6 +53,8 @@ impl std::error::Error for EnterError {}
 ///
 /// Returns an error if the current thread is already marked, in which case the
 /// caller should panic with a tailored error message.
+///
+/// 该方法不能重复调用 用于避免重入的情况
 pub fn enter() -> Result<Enter, EnterError> {
     ENTERED.with(|c| {
         if c.get() {
@@ -70,6 +73,7 @@ impl fmt::Debug for Enter {
     }
 }
 
+/// 对象被释放时  设置为false
 impl Drop for Enter {
     fn drop(&mut self) {
         ENTERED.with(|c| {

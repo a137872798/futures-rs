@@ -27,8 +27,10 @@ impl<Si: Sink<Item>, Item> Buffer<Si, Item> {
 
     delegate_access_inner!(sink, Si, ());
 
+    // 要清空buffer的数据
     fn try_empty_buffer(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Si::Error>> {
         let mut this = self.project();
+        // 将buffer的数据推送到sink  并不断检查sink的状态 确保其可用
         ready!(this.sink.as_mut().poll_ready(cx))?;
         while let Some(item) = this.buf.pop_front() {
             this.sink.as_mut().start_send(item)?;
@@ -48,6 +50,7 @@ where
     type Item = S::Item;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<S::Item>> {
+        // 从sink读取数据
         self.project().sink.poll_next(cx)
     }
 
@@ -86,6 +89,7 @@ impl<Si: Sink<Item>, Item> Sink<Item> for Buffer<Si, Item> {
         if self.capacity == 0 {
             self.project().sink.start_send(item)
         } else {
+            // 支持缓冲能力
             self.project().buf.push_back(item);
             Ok(())
         }

@@ -27,8 +27,11 @@ use std::thread::{self, Thread};
 /// [`spawner()`](LocalPool::spawner) method. Because the executor is
 /// single-threaded, it supports a special form of task spawning for non-`Send`
 /// futures, via [`spawn_local_obj`](futures_task::LocalSpawn::spawn_local_obj).
+///
+/// 本地线程池  代表所有任务仅由本线程执行
 #[derive(Debug)]
 pub struct LocalPool {
+    // FuturesUnordered 是一个任务队列   维护所有要处理的任务  并且还维护一个就绪队列 所有future在准备就绪后会进入到就绪队列
     pool: FuturesUnordered<LocalFutureObj<'static, ()>>,
     incoming: Rc<Incoming>,
 }
@@ -60,6 +63,7 @@ thread_local! {
     });
 }
 
+// 在执行暂时未就绪的任务时 可能会遇到阻塞线程的情况 当有就绪任务时 则要进行唤醒
 impl ArcWake for ThreadNotify {
     fn wake_by_ref(arc_self: &Arc<Self>) {
         // Make sure the wakeup is remembered until the next `park()`.
@@ -77,6 +81,7 @@ impl ArcWake for ThreadNotify {
 
 // Set up and run a basic single-threaded spawner loop, invoking `f` on each
 // turn.
+// 运行执行器
 fn run_executor<T, F: FnMut(&mut Context<'_>) -> Poll<T>>(mut f: F) -> T {
     let _enter = enter().expect(
         "cannot execute `LocalPool` executor from within \
@@ -84,6 +89,7 @@ fn run_executor<T, F: FnMut(&mut Context<'_>) -> Poll<T>>(mut f: F) -> T {
     );
 
     CURRENT_THREAD_NOTIFY.with(|thread_notify| {
+        // 将unpark包装成waker对象
         let waker = waker_ref(thread_notify);
         let mut cx = Context::from_waker(&waker);
         loop {
@@ -114,6 +120,7 @@ impl LocalPool {
     }
 
     /// Get a clonable handle to the pool as a [`Spawn`].
+    /// 孵化器用于往任务队列中插入任务
     pub fn spawner(&self) -> LocalSpawner {
         LocalSpawner { incoming: Rc::downgrade(&self.incoming) }
     }
@@ -133,6 +140,7 @@ impl LocalPool {
     ///
     /// The function will block the calling thread until *all* tasks in the pool
     /// are complete, including any spawned while running existing tasks.
+    /// 执行完所有任务
     pub fn run(&mut self) {
         run_executor(|cx| self.poll_pool(cx))
     }
@@ -158,6 +166,7 @@ impl LocalPool {
         pin_mut!(future);
 
         run_executor(|cx| {
+            // 单个单个的拉取
             {
                 // if our main task is done, so are we
                 let result = future.as_mut().poll(cx);
@@ -272,8 +281,10 @@ impl LocalPool {
     ///
     /// NOTE: the pool may call `wake`, so `Pending` doesn't necessarily
     /// mean that the pool can't make progress.
+    /// 这是要执行完所有的任务
     fn poll_pool(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         loop {
+            // 将incoming中的任务转移到 任务队列
             self.drain_incoming();
 
             let pool_ret = self.pool.poll_next_unpin(cx);
@@ -312,6 +323,7 @@ impl Default for LocalPool {
 ///
 /// Use a [`LocalPool`](LocalPool) if you need finer-grained control over
 /// spawned tasks.
+/// 正常调用 就是block模式  因为当任务未就绪时 会阻塞当前线程
 pub fn block_on<F: Future>(f: F) -> F::Output {
     pin_mut!(f);
     run_executor(|cx| f.as_mut().poll(cx))

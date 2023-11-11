@@ -48,6 +48,8 @@ use core::task::{Context, Poll};
 /// higher-level way. The `Sink::send_all` combinator is of particular
 /// importance: you can use it to send an entire stream to a sink, which is
 /// the simplest way to ultimately consume a stream.
+///
+/// Sink是一个可以异步发送值到另一个地方的对象
 #[must_use = "sinks do nothing unless polled"]
 pub trait Sink<Item> {
     /// The type of value produced by the sink when an error occurs.
@@ -65,6 +67,7 @@ pub trait Sink<Item> {
     ///
     /// In most cases, if the sink encounters an error, the sink will
     /// permanently be unable to receive items.
+    /// 从sink拉取一个值
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>>;
 
     /// Begin the process of sending a value to the sink.
@@ -86,6 +89,7 @@ pub trait Sink<Item> {
     ///
     /// In most cases, if the sink encounters an error, the sink will
     /// permanently be unable to receive items.
+    /// 将某个值发送到sink上
     fn start_send(self: Pin<&mut Self>, item: Item) -> Result<(), Self::Error>;
 
     /// Flush any remaining output from this sink.
@@ -100,6 +104,7 @@ pub trait Sink<Item> {
     ///
     /// In most cases, if the sink encounters an error, the sink will
     /// permanently be unable to receive items.
+    /// 将sink中剩余的所有数据都推送下去
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>>;
 
     /// Flush any remaining output and close this sink, if necessary.
@@ -113,9 +118,11 @@ pub trait Sink<Item> {
     ///
     /// If this function encounters an error, the sink should be considered to
     /// have failed permanently, and no more `Sink` methods should be called.
+    /// 将sink的数据发往下游 并关闭本对象
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>>;
 }
 
+// 将可变的自己Pin住后 再调用方法
 impl<S: ?Sized + Sink<Item> + Unpin, Item> Sink<Item> for &mut S {
     type Error = S::Error;
 
@@ -165,6 +172,7 @@ mod if_alloc {
     use super::*;
     use core::convert::Infallible;
 
+    // 可以将vec作为 sink   sink可以认为是一个暂时存储数据的容器
     impl<T> Sink<T> for alloc::vec::Vec<T> {
         type Error = Infallible;
 
@@ -172,6 +180,7 @@ mod if_alloc {
             Poll::Ready(Ok(()))
         }
 
+        // 将数据推送到vec中
         fn start_send(self: Pin<&mut Self>, item: T) -> Result<(), Self::Error> {
             // TODO: impl<T> Unpin for Vec<T> {}
             unsafe { self.get_unchecked_mut() }.push(item);

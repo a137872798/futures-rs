@@ -93,8 +93,11 @@ use core::sync::atomic;
 ///     }
 /// }
 /// ```
+/// 原子waker对象  看起来是在多线程环境下只有一个waker能设置成功?
 pub struct AtomicWaker {
+    // 描述当前状态
     state: AtomicUsize,
+    // 包含真正的waker对象
     waker: UnsafeCell<Option<Waker>>,
 }
 
@@ -193,15 +196,16 @@ pub struct AtomicWaker {
 //    Thread A still holds the `wake` lock, the call to `register` will result
 //    in the task waking itself and get scheduled again.
 
-/// Idle state
+/// Idle state   代表还未设置waker
 const WAITING: usize = 0;
 
-/// A new waker value is being registered with the `AtomicWaker` cell.
+/// A new waker value is being registered with the `AtomicWaker` cell.   注册中
 const REGISTERING: usize = 0b01;
 
-/// The waker currently registered with the `AtomicWaker` cell is being woken.
+/// The waker currently registered with the `AtomicWaker` cell is being woken.  待唤醒中
 const WAKING: usize = 0b10;
 
+/// 原子waker对象
 impl AtomicWaker {
     /// Create an `AtomicWaker`.
     pub const fn new() -> Self {
@@ -262,6 +266,7 @@ impl AtomicWaker {
     ///     }
     /// }
     /// ```
+    /// 注册waker对象
     pub fn register(&self, waker: &Waker) {
         match self
             .state
@@ -274,6 +279,7 @@ impl AtomicWaker {
 
                     // Avoid cloning the waker if the old waker will awaken the same task.
                     match &*self.waker.get() {
+                        // 代表前后2个waker一样 就不需要处理了
                         Some(old_waker) if old_waker.will_wake(waker) => (),
                         _ => *self.waker.get() = Some(waker.clone()),
                     }
@@ -298,6 +304,7 @@ impl AtomicWaker {
                             // - if there was no previous wake the next wake
                             //   will wake us, no sync needed.
                         }
+                        // 必然不可能是WAITING/REGISTERING  只可能已经被唤醒了
                         Err(actual) => {
                             // This branch can only be reached if at least one
                             // concurrent thread called `wake`. In this
@@ -306,13 +313,14 @@ impl AtomicWaker {
                             debug_assert_eq!(actual, REGISTERING | WAKING);
 
                             // Take the waker to wake once the atomic operation has
-                            // completed.
+                            // completed.   唤醒原来那个
                             let waker = (*self.waker.get()).take().unwrap();
 
                             // We need to return to WAITING state (clear our lock and
                             // concurrent WAKING flag). This needs to acquire all
                             // WAKING fetch_or releases and it needs to release our
                             // update to self.waker, so we need a `swap` operation.
+                            // 重新回到 waiting 等待下一次注册
                             self.state.swap(WAITING, AcqRel);
 
                             // memory ordering: we acquired the state for all
@@ -327,6 +335,7 @@ impl AtomicWaker {
                     }
                 }
             }
+            // 已经触发过唤醒了  直接唤醒本对象
             WAKING => {
                 // Currently in the process of waking the task, i.e.,
                 // `wake` is currently being called on the old task handle.
@@ -341,6 +350,8 @@ impl AtomicWaker {
                 // to register).
                 waker.wake_by_ref();
             }
+
+            // 并发注册  放弃本次操作
             state => {
                 // In this case, a concurrent thread is holding the
                 // "registering" lock. This probably indicates a bug in the
@@ -374,6 +385,7 @@ impl AtomicWaker {
     /// atomic action.
     ///
     /// If a waker has not been registered, this returns `None`.
+    /// 获取内部的waker对象
     pub fn take(&self) -> Option<Waker> {
         // AcqRel ordering is used in order to acquire the value of the `task`
         // cell as well as to establish a `release` ordering with whatever
@@ -388,6 +400,7 @@ impl AtomicWaker {
 
                 waker
             }
+            // 其他状态还未设置waker
             state => {
                 // There is a concurrent thread currently updating the
                 // associated task.

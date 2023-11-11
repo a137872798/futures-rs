@@ -17,6 +17,7 @@ impl<Sp: ?Sized> SpawnExt for Sp where Sp: Spawn {}
 impl<Sp: ?Sized> LocalSpawnExt for Sp where Sp: LocalSpawn {}
 
 /// Extension trait for `Spawn`.
+/// 对孵化对象 做了一些拓展
 pub trait SpawnExt: Spawn {
     /// Spawns a task that polls the given future with output `()` to
     /// completion.

@@ -42,6 +42,7 @@ pub struct BiLock<T> {
 #[derive(Debug)]
 struct Inner<T> {
     state: AtomicPtr<Waker>,
+    // 代表被锁定的值
     value: Option<UnsafeCell<T>>,
 }
 
@@ -92,7 +93,7 @@ impl<T> BiLock<T> {
         loop {
             let n = self.arc.state.swap(invalid_ptr(1), SeqCst);
             match n as usize {
-                // Woohoo, we grabbed the lock!
+                // Woohoo, we grabbed the lock!   正常情况原本是0  代表获取锁成功
                 0 => return Poll::Ready(BiLockGuard { bilock: self }),
 
                 // Oops, someone else has locked the lock
@@ -100,6 +101,7 @@ impl<T> BiLock<T> {
 
                 // A task was previously blocked on this lock, likely our task,
                 // so we need to update that task.
+                // 刚好有线程设置了waker
                 _ => unsafe {
                     let mut prev = Box::from_raw(n);
                     *prev = cx.waker().clone();
@@ -111,6 +113,7 @@ impl<T> BiLock<T> {
             let me: Box<Waker> = waker.take().unwrap_or_else(|| Box::new(cx.waker().clone()));
             let me = Box::into_raw(me);
 
+            // 从1设置成waker对象
             match self.arc.state.compare_exchange(invalid_ptr(1), me, SeqCst, SeqCst) {
                 // The lock is still locked, but we've now parked ourselves, so
                 // just report that we're scheduled to receive a notification.
@@ -168,6 +171,8 @@ impl<T> BiLock<T> {
     }
 
     fn unlock(&self) {
+
+        // 简单的上锁解锁 就是0->1 1->0  还有种情况 就是有人设置了waker 这样在解锁时就会同时触发wake
         let n = self.arc.state.swap(ptr::null_mut(), SeqCst);
         match n as usize {
             // we've locked the lock, shouldn't be possible for us to see an

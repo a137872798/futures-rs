@@ -57,6 +57,7 @@ impl<T> RemoteHandle<T> {
 impl<T: 'static> Future for RemoteHandle<T> {
     type Output = T;
 
+    // 接收结果
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
         match ready!(self.rx.poll_unpin(cx)) {
             Ok(Ok(output)) => Poll::Ready(output),
@@ -95,6 +96,7 @@ impl<Fut: Future> Future for Remote<Fut> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         let this = self.project();
 
+        // 读取处理结果
         if this.tx.as_mut().unwrap().poll_canceled(cx).is_ready()
             && !this.keep_running.load(Ordering::SeqCst)
         {

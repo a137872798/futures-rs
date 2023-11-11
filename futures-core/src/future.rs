@@ -9,10 +9,12 @@ pub use core::future::Future;
 
 /// An owned dynamically typed [`Future`] for use in cases where you can't
 /// statically type your result or need to add some indirection.
+/// 使用指针包裹future
 #[cfg(feature = "alloc")]
 pub type BoxFuture<'a, T> = Pin<alloc::boxed::Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// `BoxFuture`, but without the `Send` requirement.
+/// 没有实现send特征  只能在本线程使用
 #[cfg(feature = "alloc")]
 pub type LocalBoxFuture<'a, T> = Pin<alloc::boxed::Box<dyn Future<Output = T> + 'a>>;
 
@@ -24,6 +26,7 @@ pub type LocalBoxFuture<'a, T> = Pin<alloc::boxed::Box<dyn Future<Output = T> + 
 /// `Poll::Ready`. However, `is_terminated` may also return `true` if a future
 /// has become inactive and can no longer make progress and should be ignored
 /// or dropped rather than being `poll`ed again.
+/// 多了一个判断stream是否终止的api
 pub trait FusedFuture: Future {
     /// Returns `true` if the underlying future should no longer be polled.
     fn is_terminated(&self) -> bool;
@@ -55,6 +58,7 @@ mod private_try_future {
 
 /// A convenience for futures that return `Result` values that includes
 /// a variety of adapters tailored to such futures.
+/// 多了一个try_poll 方法
 pub trait TryFuture: Future + private_try_future::Sealed {
     /// The type of successful values yielded by this future
     type Ok;

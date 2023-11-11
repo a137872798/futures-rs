@@ -84,6 +84,7 @@ where
     delegate_access_inner!(sink, Si, ());
 
     /// Completes the processing of previous item if any.
+    /// 这里的poll只是触发将数据推送到sink
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), E>> {
         let mut this = self.project();
 
@@ -106,6 +107,7 @@ where
 {
     type Error = E;
 
+    // 先将元素推送到sink 再检查sink的状态
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         ready!(self.as_mut().poll(cx))?;
         ready!(self.project().sink.poll_ready(cx)?);
@@ -119,6 +121,8 @@ where
         this.state.set(Some((this.f)(item)));
         Ok(())
     }
+
+    // 都是先到sink 再从sink拉取
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         ready!(self.as_mut().poll(cx))?;

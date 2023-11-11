@@ -55,6 +55,7 @@ where
     }
 }
 
+// 对所有元素执行相同的操作
 impl<St, Fut, F> Future for All<St, Fut, F>
 where
     St: Stream,
@@ -70,14 +71,18 @@ where
                 // we're currently processing a future to produce a new value
                 let res = ready!(fut.poll(cx));
                 this.future.set(None);
+
+                // 一旦发现了false 代表某个元素不满足条件
                 if !res {
                     *this.done = true;
                     break false;
                 } // early exit
             } else if !*this.done {
+                // 此时内部流还未处理完
                 // we're waiting on a new item from the stream
                 match ready!(this.stream.as_mut().poll_next(cx)) {
                     Some(item) => {
+                        // 使用f处理 并将结果设置到future上
                         this.future.set(Some((this.f)(item)));
                     }
                     None => {

@@ -48,21 +48,26 @@ use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::thread;
 
-/// A result of the `pop` function.
+/// 在异步编程中使用到的管道
+
+/// A result of the `pop` function.  代表pop操作的结果
 pub(super) enum PopResult<T> {
-    /// Some data has been popped
+    /// Some data has been popped   拉取到了数据
     Data(T),
-    /// The queue is empty
+    /// The queue is empty    队列为空
     Empty,
     /// The queue is in an inconsistent state. Popping data should succeed, but
     /// some pushers have yet to make enough progress in order allow a pop to
     /// succeed. It is recommended that a pop() occur "in the near future" in
-    /// order to see if the sender has made progress or not
+    /// order to see if the sender has made progress or not    代表队列处于不一致的状态
     Inconsistent,
 }
 
+/// 表示队列中的节点
 struct Node<T> {
+    // 通过原子变量来连接链表
     next: AtomicPtr<Self>,
+    // 每个节点绑定的值   因为允许某节点值为null 所以使用Option
     value: Option<T>,
 }
 
@@ -70,15 +75,19 @@ struct Node<T> {
 /// may be safely shared so long as it is guaranteed that there is only one
 /// popper at a time (many pushers are allowed).
 pub(super) struct Queue<T> {
+    // head的next是不连接其他节点的
     head: AtomicPtr<Node<T>>,
     tail: UnsafeCell<*mut Node<T>>,
 }
+
+// 作为在异步环境使用的队列 当然要实现send/sync
 
 unsafe impl<T: Send> Send for Queue<T> {}
 unsafe impl<T: Send> Sync for Queue<T> {}
 
 impl<T> Node<T> {
     unsafe fn new(v: Option<T>) -> *mut Self {
+        // 使用一个空指针初始化next 不了解为什么要返回可变引用 而不是Self  不过使用unsafe初始化也就代表 对象不会被自动回收?
         Box::into_raw(Box::new(Self { next: AtomicPtr::new(ptr::null_mut()), value: v }))
     }
 }
@@ -92,10 +101,12 @@ impl<T> Queue<T> {
     }
 
     /// Pushes a new value onto this queue.
+    /// 推进元素 就是不断将head往前
     pub(super) fn push(&self, t: T) {
         unsafe {
             let n = Node::new(Some(t));
             let prev = self.head.swap(n, Ordering::AcqRel);
+            // 下下个元素的next指向prev 这样就连起来了
             (*prev).next.store(n, Ordering::Release);
         }
     }
@@ -112,10 +123,12 @@ impl<T> Queue<T> {
     /// it does not currently have access to it at this time.
     ///
     /// This function is unsafe because only one thread can call it at a time.
+    /// 弹出tail
     pub(super) unsafe fn pop(&self) -> PopResult<T> {
         let tail = *self.tail.get();
         let next = (*tail).next.load(Ordering::Acquire);
 
+        // 更新tail的值  因为tail本身值为None 所以当有next时 next的值才是应该pop出来的
         if !next.is_null() {
             *self.tail.get() = next;
             assert!((*tail).value.is_none());
@@ -125,9 +138,11 @@ impl<T> Queue<T> {
             return Data(ret);
         }
 
+        // 此时首尾已经是一个对象了 返回空  因为head没有next 所以tail没有next时 就是head
         if self.head.load(Ordering::Acquire) == tail {
             Empty
         } else {
+            // 可能出现并发问题了  在!next.is_null 判断后立马插入了新元素 导致head != tail
             Inconsistent
         }
     }
@@ -152,6 +167,7 @@ impl<T> Queue<T> {
                 //
                 // For now, thread::yield_now() is used, but it would
                 // probably be better to spin a few times then yield.
+                // 当出现不一致时 短暂的自旋
                 Inconsistent => {
                     thread::yield_now();
                 }
@@ -160,9 +176,11 @@ impl<T> Queue<T> {
     }
 }
 
+// 队列对象本身被丢弃时 释放所有node
 impl<T> Drop for Queue<T> {
     fn drop(&mut self) {
         unsafe {
+            // 看来tail 才是第一个节点
             let mut cur = *self.tail.get();
             while !cur.is_null() {
                 let next = (*cur).next.load(Ordering::Relaxed);

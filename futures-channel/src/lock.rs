@@ -13,14 +13,18 @@ use core::sync::atomic::Ordering::SeqCst;
 ///
 /// This lock only supports the `try_lock` operation, however, and does not
 /// implement poisoning.
+/// 一个简单的CAS锁
 #[derive(Debug)]
 pub(crate) struct Lock<T> {
+    // 描述是否上锁
     locked: AtomicBool,
+    // 锁保护的数据
     data: UnsafeCell<T>,
 }
 
 /// Sentinel representing an acquired lock through which the data can be
 /// accessed.
+/// 上锁成功时返回该对象 该对象就是为了在drop时进行解锁
 pub(crate) struct TryLock<'a, T> {
     __ptr: &'a Lock<T>,
 }
@@ -78,6 +82,7 @@ impl<T> DerefMut for TryLock<'_, T> {
     }
 }
 
+// 对应普通锁 guard的职能
 impl<T> Drop for TryLock<'_, T> {
     fn drop(&mut self) {
         self.__ptr.locked.store(false, SeqCst);

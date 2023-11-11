@@ -6,6 +6,10 @@ use core::task::{Context, Poll};
 
 /// An owned dynamically typed [`Stream`] for use in cases where you can't
 /// statically type your result or need to add some indirection.
+///
+
+///  只是定义了上层接口 并没有什么核心逻辑
+
 #[cfg(feature = "alloc")]
 pub type BoxStream<'a, T> = Pin<alloc::boxed::Box<dyn Stream<Item = T> + Send + 'a>>;
 
@@ -23,6 +27,8 @@ pub type LocalBoxStream<'a, T> = Pin<alloc::boxed::Box<dyn Stream<Item = T> + 'a
 /// The trait is modeled after `Future`, but allows `poll_next` to be called
 /// even after a value has been produced, yielding `None` once the stream has
 /// been fully exhausted.
+/// future只是一次性的 调用完poll后就得到结果了
+/// 而stream可以调用多次 每次获取一个结果
 #[must_use = "streams do nothing unless polled"]
 pub trait Stream {
     /// Values yielded by the stream.

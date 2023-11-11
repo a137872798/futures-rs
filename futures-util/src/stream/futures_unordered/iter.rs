@@ -6,6 +6,7 @@ use core::ptr;
 use core::sync::atomic::Ordering::Relaxed;
 
 /// Mutable iterator over all futures in the unordered set.
+/// 这个迭代器不需要stub
 #[derive(Debug)]
 pub struct IterPinMut<'a, Fut> {
     pub(super) task: *const Task<Fut>,
@@ -20,9 +21,9 @@ pub struct IterMut<'a, Fut: Unpin>(pub(super) IterPinMut<'a, Fut>);
 /// Immutable iterator over all futures in the unordered set.
 #[derive(Debug)]
 pub struct IterPinRef<'a, Fut> {
-    pub(super) task: *const Task<Fut>,
-    pub(super) len: usize,
-    pub(super) pending_next_all: *mut Task<Fut>,
+    pub(super) task: *const Task<Fut>,  // head任务
+    pub(super) len: usize,  // 总长度
+    pub(super) pending_next_all: *mut Task<Fut>,  // 一般就是stub任务
     pub(super) _marker: PhantomData<&'a FuturesUnordered<Fut>>,
 }
 
@@ -40,6 +41,7 @@ pub struct IntoIter<Fut: Unpin> {
 impl<Fut: Unpin> Iterator for IntoIter<Fut> {
     type Item = Fut;
 
+    /// 遍历迭代器
     fn next(&mut self) -> Option<Self::Item> {
         // `head_all` can be accessed directly and we don't need to spin on
         // `Task::next_all` since we have exclusive access to the set.
@@ -58,6 +60,8 @@ impl<Fut: Unpin> Iterator for IntoIter<Fut> {
             // current thread acquired it, so relaxed ordering can be used and
             // valid `next_all` checks can be skipped.
             let next = (**task).next_all.load(Relaxed);
+
+            // 更新head
             *task = next;
             if !task.is_null() {
                 *(**task).prev_all.get() = ptr::null_mut();

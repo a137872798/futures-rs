@@ -26,7 +26,9 @@ where
     f(l.as_pin_mut(), cx)
 }
 
+// bi锁 是在split时使用的
 pub(super) fn split<T: AsyncRead + AsyncWrite>(t: T) -> (ReadHalf<T>, WriteHalf<T>) {
+    // 将数据一分为二
     let (a, b) = BiLock::new(t);
     (ReadHalf { handle: a }, WriteHalf { handle: b })
 }

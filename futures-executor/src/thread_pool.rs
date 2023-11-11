@@ -45,8 +45,11 @@ pub struct ThreadPoolBuilder {
 trait AssertSendSync: Send + Sync {}
 impl AssertSendSync for ThreadPool {}
 
+// 描述线程池状态
 struct PoolState {
+    // 要运行的任务通过该对象发送
     tx: Mutex<mpsc::Sender<Message>>,
+    // 多线程借助该对象读取任务
     rx: Mutex<mpsc::Receiver<Message>>,
     cnt: AtomicUsize,
     size: usize,
@@ -68,6 +71,7 @@ impl fmt::Debug for ThreadPoolBuilder {
 }
 
 enum Message {
+    // 表示可以运行某个任务了
     Run(Task),
     Close,
 }
@@ -101,6 +105,7 @@ impl ThreadPool {
             wake_handle: Arc::new(WakeHandle { exec: self.clone(), mutex: UnparkMutex::new() }),
             exec: self.clone(),
         };
+        // 要执行一个新任务 就是将它发送出去
         self.state.send(Message::Run(task));
     }
 
@@ -141,6 +146,7 @@ impl PoolState {
         self.tx.lock().unwrap().send(msg).unwrap();
     }
 
+    // 每个线程执行该方法
     fn work(
         &self,
         idx: usize,
@@ -273,6 +279,7 @@ impl ThreadPoolBuilder {
             }),
         };
 
+        // 根据pool_size 创建等量线程 执行work
         for counter in 0..self.pool_size {
             let state = pool.state.clone();
             let after_start = self.after_start.clone();
@@ -349,6 +356,7 @@ impl fmt::Debug for Task {
 
 impl ArcWake for WakeHandle {
     fn wake_by_ref(arc_self: &Arc<Self>) {
+        // 代表任务准备就绪  发送一条执行消息
         if let Ok(task) = arc_self.mutex.notify() {
             arc_self.exec.state.send(Message::Run(task))
         }

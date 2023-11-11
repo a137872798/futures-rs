@@ -94,6 +94,8 @@ mod queue;
 #[cfg(feature = "sink")]
 mod sink_impl;
 
+/// mpsc对象 需要与queue/sink_impl模块配合使用  分为有界模式和无界模式
+
 struct UnboundedSenderInner<T> {
     // Channel state shared between the sender and receiver.
     inner: Arc<UnboundedInner<T>>,
@@ -105,11 +107,11 @@ struct BoundedSenderInner<T> {
 
     // Handle to the task that is blocked on this sender. This handle is sent
     // to the receiver half in order to be notified when the sender becomes
-    // unblocked.
+    // unblocked.   因为是有界对象 所以某些sender会被阻塞  每个发送者只需要知道自己的senderTask就可以了  而bounded对象负责维护所有task
     sender_task: Arc<Mutex<SenderTask>>,
 
     // `true` if the sender might be blocked. This is an optimization to avoid
-    // having to lock the mutex most of the time.
+    // having to lock the mutex most of the time.  通过检查标识判断是否被阻塞
     maybe_parked: bool,
 }
 
@@ -133,6 +135,7 @@ impl AssertKinds for UnboundedSender<u32> {}
 /// The receiving end of a bounded mpsc channel.
 ///
 /// This value is created by the [`channel`] function.
+/// 接收者 把有关bounded对象的访问 包装起来了 (屏蔽了它可能被多个对象访问的细节)
 pub struct Receiver<T> {
     inner: Option<Arc<BoundedInner<T>>>,
 }
@@ -249,36 +252,41 @@ impl fmt::Display for TryRecvError {
 
 impl std::error::Error for TryRecvError {}
 
+// 表示一个没有界限的对象
 struct UnboundedInner<T> {
     // Internal channel state. Consists of the number of messages stored in the
     // channel as well as a flag signalling that the channel is closed.
+    // 描述管道内部状态
     state: AtomicUsize,
 
     // Atomic, FIFO queue used to send messages to the receiver
+    // mpsc队列 存储元素
     message_queue: Queue<T>,
 
-    // Number of senders in existence
+    // Number of senders in existence  代表当前有多少发送者访问queue
     num_senders: AtomicUsize,
 
-    // Handle to the receiver's task.
+    // Handle to the receiver's task.    该对象可以唤醒阻塞在等待新元素的receiver
     recv_task: AtomicWaker,
 }
 
+// 代表一个有界限的对象
 struct BoundedInner<T> {
-    // Max buffer size of the channel.
+    // Max buffer size of the channel.   队列的最大长度
     buffer: usize,
 
     // Internal channel state. Consists of the number of messages stored in the
-    // channel as well as a flag signalling that the channel is closed.
+    // channel as well as a flag signalling that the channel is closed.   表示状态
     state: AtomicUsize,
 
-    // Atomic, FIFO queue used to send messages to the receiver
+    // Atomic, FIFO queue used to send messages to the receiver  存储元素的链表
     message_queue: Queue<T>,
 
     // Atomic, FIFO queue used to send parked task handles to the receiver.
+    // 因为可能有多个发送者 每个发送者对应一个SenderTask   又因为该对象会被共享 需要arc+mutex  arc能够共享 mutex能够串行访问
     parked_queue: Queue<Arc<Mutex<SenderTask>>>,
 
-    // Number of senders in existence
+    // Number of senders in existence  记录此时有多少发送者
     num_senders: AtomicUsize,
 
     // Handle to the receiver's task.
@@ -286,12 +294,13 @@ struct BoundedInner<T> {
 }
 
 // Struct representation of `Inner::state`.
+// 描述inner的状态
 #[derive(Clone, Copy)]
 struct State {
-    // `true` when the channel is open
+    // `true` when the channel is open   此时管道是否还处于打开状态
     is_open: bool,
 
-    // Number of messages in the channel
+    // Number of messages in the channel   内部囤积了多少消息
     num_messages: usize,
 }
 
@@ -310,7 +319,9 @@ const MAX_CAPACITY: usize = !(OPEN_MASK);
 const MAX_BUFFER: usize = MAX_CAPACITY >> 1;
 
 // Sent to the consumer to wake up blocked producers
+// 可以看到rust的编程思维  就是按照可以被复用的元素为单位 在外层使用不同的智能指针进行包装和增强
 struct SenderTask {
+    // 首先发送任务本身需要允许被唤醒 以及一个是否被暂停的标识
     task: Option<Waker>,
     is_parked: bool,
 }
@@ -321,6 +332,7 @@ impl SenderTask {
     }
 
     fn notify(&mut self) {
+        // 代表被唤醒 同时调用wake方法
         self.is_parked = false;
 
         if let Some(task) = self.task.take() {
@@ -339,6 +351,8 @@ impl SenderTask {
 ///
 /// The [`Receiver`] returned implements the [`Stream`] trait, while [`Sender`]
 /// implements `Sink`.
+///
+/// 执行长度  生成一个有界管道
 pub fn channel<T>(buffer: usize) -> (Sender<T>, Receiver<T>) {
     // Check that the requested buffer size does not exceed the maximum buffer
     // size permitted by the system.
@@ -349,7 +363,7 @@ pub fn channel<T>(buffer: usize) -> (Sender<T>, Receiver<T>) {
         state: AtomicUsize::new(INIT_STATE),
         message_queue: Queue::new(),
         parked_queue: Queue::new(),
-        num_senders: AtomicUsize::new(1),
+        num_senders: AtomicUsize::new(1),  // 每次clone应该都会多一个sender
         recv_task: AtomicWaker::new(),
     });
 
@@ -396,6 +410,8 @@ pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
  */
 
 impl<T> UnboundedSenderInner<T> {
+
+    // 检查发送这是否可用
     fn poll_ready_nb(&self) -> Poll<Result<(), SendError>> {
         let state = decode_state(self.inner.state.load(SeqCst));
         if state.is_open {
@@ -406,6 +422,7 @@ impl<T> UnboundedSenderInner<T> {
     }
 
     // Push message to the queue and signal to the receiver
+    // 发送消息 并唤醒接收者
     fn queue_push_and_signal(&self, msg: T) {
         // Push the message onto the message queue
         self.inner.message_queue.push(msg);
@@ -447,6 +464,7 @@ impl<T> UnboundedSenderInner<T> {
     }
 
     /// Returns whether the senders send to the same receiver.
+    /// 判断与另一对象是否共用接收者
     fn same_receiver(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
@@ -469,6 +487,7 @@ impl<T> UnboundedSenderInner<T> {
     }
 
     /// Closes this channel from the sender side, preventing any new messages.
+    /// 关闭管道 同时唤醒receiver 让其发现管道已经关闭
     fn close_channel(&self) {
         // There's no need to park this sender, its dropping,
         // and we don't want to check for capacity, so skip
@@ -482,8 +501,10 @@ impl<T> UnboundedSenderInner<T> {
 impl<T> BoundedSenderInner<T> {
     /// Attempts to send a message on this `Sender`, returning the message
     /// if there was an error.
+    /// 发送消息
     fn try_send(&mut self, msg: T) -> Result<(), TrySendError<T>> {
         // If the sender is currently blocked, reject the message
+        // 先检查sender是否被阻塞
         if !self.poll_unparked(None).is_ready() {
             return Err(TrySendError { err: SendError { kind: SendErrorKind::Full }, val: msg });
         }
@@ -494,6 +515,7 @@ impl<T> BoundedSenderInner<T> {
 
     // Do the send without failing.
     // Can be called only by bounded sender.
+    // 这里是真正的发送方法
     fn do_send_b(&mut self, msg: T) -> Result<(), TrySendError<T>> {
         // Anyone calling do_send *should* make sure there is room first,
         // but assert here for tests as a sanity check.
@@ -506,12 +528,15 @@ impl<T> BoundedSenderInner<T> {
         // `None` is returned in the case that the channel has been closed by the
         // receiver. This happens when `Receiver::close` is called or the
         // receiver is dropped.
+        // 先检测是否过界
         let park_self = match self.inc_num_messages() {
             Some(num_messages) => {
                 // Block if the current number of pending messages has exceeded
                 // the configured buffer size
                 num_messages > self.inner.buffer
             }
+
+            // channel已被关闭时  返回None
             None => {
                 return Err(TrySendError {
                     err: SendError { kind: SendErrorKind::Disconnected },
@@ -527,10 +552,12 @@ impl<T> BoundedSenderInner<T> {
         // `task::current()` can't be called safely. In this case, in order to
         // maintain internal consistency, a blank message is pushed onto the
         // parked task queue.
+        // 暂停  从这里看 park并没有停止线程 还是会触发queue_push_and_signal
         if park_self {
             self.park();
         }
 
+        // 推送消息 并唤醒receiver
         self.queue_push_and_signal(msg);
 
         Ok(())
@@ -577,7 +604,9 @@ impl<T> BoundedSenderInner<T> {
         }
     }
 
+    // 暂停自身   实际上也没真的暂停 配合is_parked 实现"异步阻塞"
     fn park(&mut self) {
+        // 因为该对象可能会被其他线程唤醒 所以需要mutex
         {
             let mut sender = self.sender_task.lock().unwrap();
             sender.task = None;
@@ -586,6 +615,7 @@ impl<T> BoundedSenderInner<T> {
 
         // Send handle over queue
         let t = self.sender_task.clone();
+        // 将task推送到阻塞队列
         self.inner.parked_queue.push(t);
 
         // Check to make sure we weren't closed after we sent our task on the
@@ -606,12 +636,15 @@ impl<T> BoundedSenderInner<T> {
     ///   capacity, in which case the current task is queued to be notified once
     ///   capacity is available;
     /// - `Poll::Ready(Err(SendError))` if the receiver has been dropped.
+    /// 检查当前channel是否可用
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), SendError>> {
         let state = decode_state(self.inner.state.load(SeqCst));
+        // 处于关闭状态肯定是不可用的
         if !state.is_open {
             return Poll::Ready(Err(SendError { kind: SendErrorKind::Disconnected }));
         }
 
+        // 检查是否处于unparked状态
         self.poll_unparked(Some(cx)).map(Ok)
     }
 
@@ -647,6 +680,7 @@ impl<T> BoundedSenderInner<T> {
         self.inner.recv_task.wake();
     }
 
+    // 等待直到进入unparked状态
     fn poll_unparked(&mut self, cx: Option<&mut Context<'_>>) -> Poll<()> {
         // First check the `maybe_parked` variable. This avoids acquiring the
         // lock in most cases
@@ -665,6 +699,7 @@ impl<T> BoundedSenderInner<T> {
             //
             // Update the task in case the `Sender` has been moved to another
             // task
+            // 设置wake对象
             task.task = cx.map(|cx| cx.waker().clone());
 
             Poll::Pending
@@ -706,6 +741,7 @@ impl<T> Sender<T> {
     ///   capacity, in which case the current task is queued to be notified once
     ///   capacity is available;
     /// - `Poll::Ready(Err(SendError))` if the receiver has been dropped.
+    /// 检查当前发送者是否可用
     pub fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), SendError>> {
         let inner = self.0.as_mut().ok_or(SendError { kind: SendErrorKind::Disconnected })?;
         inner.poll_ready(cx)
@@ -864,6 +900,8 @@ impl<T> Clone for UnboundedSender<T> {
 }
 
 impl<T> Clone for UnboundedSenderInner<T> {
+
+    // clone时 要增加发送者数量
     fn clone(&self) -> Self {
         // Since this atomic op isn't actually guarding any memory and we don't
         // care about any orderings besides the ordering on the single atomic
@@ -960,7 +998,7 @@ impl<T> fmt::Debug for UnboundedSender<T> {
 /*
  *
  * ===== impl Receiver =====
- *
+ * 作为接收者 实现的方法
  */
 
 impl<T> Receiver<T> {
@@ -969,12 +1007,16 @@ impl<T> Receiver<T> {
     /// This prevents any further messages from being sent on the channel while
     /// still enabling the receiver to drain messages that are buffered.
     pub fn close(&mut self) {
+
+        // 因为接收者内部也是维护inner对象 可以直接调用close
         if let Some(inner) = &mut self.inner {
             inner.set_closed();
 
             // Wake up any threads waiting as they'll see that we've closed the
             // channel and will continue on their merry way.
+            // 挨个唤醒所有发送者
             while let Some(task) = unsafe { inner.parked_queue.pop_spin() } {
+                // 被唤醒后做出什么样的行为是有 context所在的上下文决定的 这里只是触发了开关
                 task.lock().unwrap().notify();
             }
         }
@@ -1007,6 +1049,7 @@ impl<T> Receiver<T> {
             Some(msg) => {
                 // If there are any parked task handles in the parked queue,
                 // pop one and unpark it.
+                // 获得消息后 队列空出了位置 唤醒一个发送者
                 self.unpark_one();
 
                 // Decrement number of messages
@@ -1137,6 +1180,7 @@ impl<T> fmt::Debug for Receiver<T> {
     }
 }
 
+// 跟Receiver差不多
 impl<T> UnboundedReceiver<T> {
     /// Closes the receiving half of a channel, without dropping it.
     ///
@@ -1292,13 +1336,15 @@ impl<T> fmt::Debug for UnboundedReceiver<T> {
 /*
  *
  * ===== impl Inner =====
- *
+ * 无界限对象
  */
 
 impl<T> UnboundedInner<T> {
     // Clear `open` flag in the state, keep `num_messages` intact.
+    // 将状态修改成关闭
     fn set_closed(&self) {
         let curr = self.state.load(SeqCst);
+        // 已经关闭 不需要处理
         if !decode_state(curr).is_open {
             return;
         }
@@ -1348,7 +1394,7 @@ impl State {
 /*
  *
  * ===== Helpers =====
- *
+ * 查看状态
  */
 
 fn decode_state(num: usize) -> State {

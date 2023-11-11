@@ -21,6 +21,7 @@ use futures_core::task::{Context, Poll, Waker};
 /// indefinitely.
 pub struct Mutex<T: ?Sized> {
     state: AtomicUsize,
+    // 一个等待队列   Waiter 代表待唤醒的Waker 或者已唤醒的Woken
     waiters: StdMutex<Slab<Waiter>>,
     value: UnsafeCell<T>,
 }
@@ -53,9 +54,12 @@ enum Waiter {
 }
 
 impl Waiter {
+
+    // 为某个等待对象绑定一个waker
     fn register(&mut self, waker: &Waker) {
         match self {
             Self::Waiting(w) if waker.will_wake(w) => {}
+            // 其余情况更新waker
             _ => *self = Self::Waiting(waker.clone()),
         }
     }
@@ -102,6 +106,7 @@ impl<T: ?Sized> Mutex<T> {
     /// If the lock is currently held, this will return `None`.
     pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
         let old_state = self.state.fetch_or(IS_LOCKED, Ordering::Acquire);
+        // 首次上锁才能成功
         if (old_state & IS_LOCKED) == 0 {
             Some(MutexGuard { mutex: self })
         } else {
@@ -159,10 +164,12 @@ impl<T: ?Sized> Mutex<T> {
         unsafe { &mut *self.value.get() }
     }
 
+    // 因为某种原因 已经不再需要等待了
     fn remove_waker(&self, wait_key: usize, wake_another: bool) {
         if wait_key != WAIT_KEY_NONE {
             let mut waiters = self.waiters.lock().unwrap();
 
+            // 通过key找到关联的等待对象
             let removed_waker = waiters.remove(wait_key);
 
             match removed_waker {
@@ -188,9 +195,11 @@ impl<T: ?Sized> Mutex<T> {
     // dropped.
     fn unlock(&self) {
         let old_state = self.state.fetch_and(!IS_LOCKED, Ordering::AcqRel);
+        // 代表有等待的线程
         if (old_state & HAS_WAITERS) != 0 {
             let mut waiters = self.waiters.lock().unwrap();
             if let Some((_i, waiter)) = waiters.iter_mut().next() {
+                // 挨个进行唤醒
                 waiter.wake();
             }
         }
@@ -234,26 +243,33 @@ impl<T: ?Sized> Future for OwnedMutexLockFuture<T> {
 
         let mutex = this.mutex.as_ref().expect("polled OwnedMutexLockFuture after completion");
 
+        // 先尝试占有锁
         if let Some(lock) = mutex.try_lock_owned() {
+            // 占有成功的情况下 就不需要被唤醒了
             mutex.remove_waker(this.wait_key, false);
             this.mutex = None;
             return Poll::Ready(lock);
         }
 
         {
+            // 占有失败 增加一个waiter
             let mut waiters = mutex.waiters.lock().unwrap();
+            // 代表首次添加
             if this.wait_key == WAIT_KEY_NONE {
+                // 通过insert得到下标
                 this.wait_key = waiters.insert(Waiter::Waiting(cx.waker().clone()));
                 if waiters.len() == 1 {
                     mutex.state.fetch_or(HAS_WAITERS, Ordering::Relaxed); // released by mutex unlock
                 }
             } else {
+                // 代表锁又被使用了
                 waiters[this.wait_key].register(cx.waker());
             }
         }
 
         // Ensure that we haven't raced `MutexGuard::drop`'s unlock path by
         // attempting to acquire the lock again.
+        // 再尝试一次
         if let Some(lock) = mutex.try_lock_owned() {
             mutex.remove_waker(this.wait_key, false);
             this.mutex = None;
